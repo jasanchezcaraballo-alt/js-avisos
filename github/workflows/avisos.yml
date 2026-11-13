@@ -1,0 +1,15 @@
+name: JS Avisos
+on:
+  schedule:
+    - cron: "1,16,31,46 * * * 1-5"
+  workflow_dispatch:
+jobs:
+  avisos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: python avisos.py
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PRUEBA: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
