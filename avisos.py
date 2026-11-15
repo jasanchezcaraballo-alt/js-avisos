@@ -12,7 +12,8 @@ def velas(par, minutos):
     if d.get("error"):
         raise RuntimeError(d["error"])
     filas = next(v for k, v in d["result"].items() if k != "last")
-    out = [dict(t=int(f[0]), h=float(f[2]), l=float(f[3]), c=float(f[4])) for f in filas]
+    # [t, open, high, low, close, vwap, volume, count]
+    out = [dict(t=int(f[0]), h=float(f[2]), l=float(f[3]), c=float(f[4]), v=float(f[6])) for f in filas]
     return out[:-1]  # quita la vela abierta: solo velas cerradas
 
 def ema(x, n):
@@ -56,17 +57,47 @@ def senal_15m(v):
     return (f"{lado} (15m MACD+EMA200)\nEntrada ~{px:,.2f}\nStop {stop:,.2f}\n"
             f"Objetivo {obj:,.2f}\nTamano ~{RIESGO_USD / dist:.4f} unidades (riesgo {RIESGO_USD:.0f} USD)")
 
-def senal_rsi_1h(v):  # VBSM NO incluido: confirmalo tu en el grafico
+def vbsm(v, largo=25):
+    """VBSM de Siyeon/2tm: PVI+NVI (linea azul) contra su media (roja).
+    Devuelve d = azul - roja. d > 0 = verde (alcista), d < 0 = rojo (bajista)."""
+    c = [x["c"] for x in v]
+    vol = [x["v"] for x in v]
+    n1, n2, a, b = [0.0], [0.0], 0.0, 0.0
+    for i in range(1, len(c)):
+        roc = 100 * (c[i] - c[i-1]) / c[i-1]
+        if vol[i] < vol[i-1]:
+            a += roc
+        if vol[i] > vol[i-1]:
+            b += roc
+        n1.append(a); n2.append(b)
+    d = [None] * (largo - 1)
+    for i in range(largo - 1, len(c)):
+        d.append((n1[i] - sum(n1[i-largo+1:i+1]) / largo) + (n2[i] - sum(n2[i-largo+1:i+1]) / largo))
+    return d
+
+MARGEN = 2  # velas de margen entre el cruce del RSI y el cambio de color del VBSM
+
+def senal_rsi_vbsm_1h(v):
     c = [x["c"] for x in v]
     r = rsi(c)
     m = [None] * 27 + [sum(r[i-13:i+1]) / 14 for i in range(27, len(r))]
-    i = len(c) - 1
-    if m[i-1] is None:
-        return None
-    if r[i-1] <= m[i-1] and r[i] > m[i]:
-        return "RSI 1h cruza su media AL ALZA. Comprueba tu VBSM (verde) antes de entrar."
-    if r[i-1] >= m[i-1] and r[i] < m[i]:
-        return "RSI 1h cruza su media A LA BAJA. Comprueba tu VBSM (rojo) antes de entrar."
+    d = vbsm(v)
+    n = len(c)
+    ini = max(27, 25) + 1
+    rs_up, rs_dn, vb_up, vb_dn = [False] * n, [False] * n, [False] * n, [False] * n
+    for i in range(ini, n):
+        rs_up[i] = r[i-1] <= m[i-1] and r[i] > m[i]
+        rs_dn[i] = r[i-1] >= m[i-1] and r[i] < m[i]
+        vb_up[i] = d[i-1] <= 0 < d[i]
+        vb_dn[i] = d[i-1] >= 0 > d[i]
+    i = n - 1
+    ventana = range(max(ini, i - MARGEN), i + 1)
+    if (rs_up[i] and any(vb_up[j] for j in ventana)) or (vb_up[i] and any(rs_up[j] for j in ventana)):
+        return (f"AVISO 2 LARGO (1h): el RSI cruza su media al alza y el VBSM se pone verde.\n"
+                f"Precio ~{c[i]:,.2f}. Stop y tamano: decidelos tu antes de entrar.")
+    if (rs_dn[i] and any(vb_dn[j] for j in ventana)) or (vb_dn[i] and any(rs_dn[j] for j in ventana)):
+        return (f"AVISO 2 CORTO (1h): el RSI cruza su media a la baja y el VBSM se pone rojo.\n"
+                f"Precio ~{c[i]:,.2f}. Stop y tamano: decidelos tu antes de entrar.")
     return None
 
 def telegram(texto):
@@ -81,7 +112,7 @@ def main():
         telegram("Prueba de JS Avisos: si lees esto, el bot funciona."); return
     ahora = time.time()
     for nombre, par in PARES.items():
-        for minutos, fn in ((15, senal_15m), (60, senal_rsi_1h)):
+        for minutos, fn in ((15, senal_15m), (60, senal_rsi_vbsm_1h)):
             try:
                 v = velas(par, minutos)
                 # solo si la vela se acaba de cerrar (evita repetir avisos)
